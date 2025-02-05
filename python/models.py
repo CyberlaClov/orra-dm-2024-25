@@ -1,5 +1,6 @@
 import pickle
 from abc import abstractmethod
+from gurobipy import Model, GRB, quicksum
 
 import numpy as np
 
@@ -181,13 +182,32 @@ class TwoClustersMIP(BaseModel):
         n_clusters: int
             Number of clusters to implement in the MIP.
         """
-        self.seed = 123
+        super().__init__()
+        self.L = n_pieces
+        self.K = n_clusters
+        #self.seed = 123
         self.model = self.instantiate()
 
     def instantiate(self):
         """Instantiation of the MIP Variables - To be completed."""
-        # To be completed
-        return
+        model = Model("UTA MIP")
+        self.u = {}
+        self.c = {}
+        self.sigma = {}
+        
+        for k in range(1, self.K + 1):
+            for i in range(1, self.n + 1):
+                for l in range(self.L + 1):
+                    self.u[k, i, l] = model.addVar(lb=0, ub=1, vtype=GRB.CONTINUOUS)
+                    
+        for j in range(1, self.P + 1):
+            for k in range(1, self.K + 1):
+                self.c[j, k] = model.addVar(vtype=GRB.BINARY)
+                self.sigma[j, k] = model.addVar(lb=0, vtype=GRB.CONTINUOUS)
+                        
+        model.update()   
+        
+        return model
 
     def fit(self, X, Y):
         """Estimation of the parameters - To be completed.
@@ -199,9 +219,48 @@ class TwoClustersMIP(BaseModel):
         Y: np.ndarray
             (n_samples, n_features) features of unchosen elements
         """
-
-        # To be completed
-        return
+        P, n = X.shape
+        self.P = P
+        self.n = n
+        
+        for k in range(1, self.K + 1):
+            self.model.addConstr(quicksum(self.u[k, i, self.L] for i in range(1, self.n + 1)) == 1)
+            for i in range(1, self.n + 1):
+                self.model.addConstr(self.u[k, i, 0] == 0)
+                for l in range(self.L):
+                    self.model.addConstr(self.u[k, i, l + 1] >= self.u[k, i, l])
+                    
+        M = 1000
+        for j in range(1, self.P + 1):
+            self.model.addConstr(quicksum(self.c[j, k] for k in range(1, self.K + 1)) >= 1)
+            for k in range(1, self.K + 1):
+                self.model.addConstr(
+                    M * (self.c[j, k] - 1) <=
+                    quicksum(self.u[k, i, int(X[j-1, i-1] * self.L)] - self.u[k, i, int(Y[j-1, i-1] * self.L)] for i in range(1, self.n + 1))
+                    + self.sigma[j, k] <= M * self.c[j, k]
+                )
+                    
+        self.model.setObjective(quicksum(self.sigma[j, k] for j in range(1, self.P + 1) for k in range(1, self.K + 1)), GRB.MINIMIZE)
+        self.model.optimize()
+        
+        return None
+    
+    
+    def find_closest_breakpoints(self, x_val):
+        l = int(np.floor(x_val * self.L))
+        l = max(0, min(l, self.L - 1))
+        l_next = min(l + 1, self.L)
+        return l, l_next
+    
+    
+    def interpolate(self, k, i, x_val):
+        l, l_next = self.find_closest_breakpoints(x_val)
+        
+        u_l = self.u[k, i, l].X
+        u_l_next = self.u[k, i, l_next].X if l_next < self.L else u_l
+        
+        return u_l + (x_val * self.L - l) * (u_l_next - u_l)
+    
 
     def predict_utility(self, X):
         """Return Decision Function of the MIP for X. - To be completed.
@@ -218,8 +277,17 @@ class TwoClustersMIP(BaseModel):
         """
         # To be completed
         # Do not forget that this method is called in predict_preference (line 42) and therefor should return well-organized data for it to work.
-        return
-
+        
+        utilities = np.zeros((self.P, self.K))
+        
+        for j in range(1, self.P + 1):
+            for k in range(1, self.K + 1):
+                for i in range(1, self.n + 1):
+                    utilities[j-1, k-1] += self.interpolate(k, i, X[j-1, i-1])
+        
+        return utilities
+        
+    
 
 class HeuristicModel(BaseModel):
     """Skeleton of MIP you have to write as the first exercise.
