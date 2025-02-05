@@ -37,7 +37,7 @@ header-includes:
 We seek to minimize :
 
 $$
-\min \sum_{k=1}^{K} \sum_{j=1}^{P} \sigma^k (x^{(j)})
+\min \sum_{k=1}^{K} \sum_{j=1}^{P} \sigma^k (j)
 $$
 
 ## Decision variables
@@ -68,7 +68,10 @@ $$
 ### Preference constraints
 
 $$
-M(c_k^{(j)}-1) \leq \sum_{i=1}^{n} [u_i^k(x_i^{(j)}) - u_i^k(y_i^{(j)})] + \sigma^k (x^{(j)}) - \sigma^k (y^{(j)}) \leq Mc_k^{(j)} \quad \forall k \in [1,K], \forall j \in [1,P]
+M(c_k^{(j)}-1) \leq \sum_{i=1}^{n} [u_i^k(x_i^{(j)}) - u_i^k(y_i^{(j)})] + \sigma^k (x^{(j)}) \leq Mc_k^{(j)} \quad \forall k \in [1,K], \forall j \in [1,P]
+$$
+$$
+\sum_{k=1}^{K} c_k^{(j)} \geq 1 \quad \forall j
 $$
 
 ### Domain constraints
