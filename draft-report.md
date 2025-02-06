@@ -29,8 +29,20 @@ header-includes:
 
 # Introduction
 
-# Problem formulation
+In this project, we explore preference learning, a key challenge in modern decision analysis and recommendation systems. Our focus is on learning utility functions from pairwise preferences using Mixed Integer Programming (MIP). The goal is to develop models that can effectively capture and predict decision-making patterns from observed preference data, particularly in scenarios where different groups of decision-makers may exhibit distinct preference behaviors.
 
+Building upon the foundational UTA (UTilités Additives) method introduced by Jacquet-Lagrèze and Siskos[^1], our work extends the original approach to handle multiple preference clusters simultaneously. The UTA method provides a framework for inferring additive utility functions from preference rankings, and has become a cornerstone in multicriteria decision analysis.
+
+
+The project is structured in three main parts:
+
+1. Definition and formulation of a MIP model to learn piecewise-linear utility functions with multiple clusters
+2. Implementation and analysis of the MIP model
+3. Development of a heuristic approach for preference learning to handle larger-scale problems
+
+Our approach builds upon the UTA (UTilités Additives) method while extending it to handle multiple preference clusters simultaneously.
+
+# 1. Problem formulation
 
 ## Objective function
 
@@ -83,4 +95,24 @@ $$
 c_k^{(j)} \in \{0,1\} \quad \forall j,  \forall k
 $$
 
+# 2. Implementation and Results
 
+## 2.1 Model Implementation
+
+It's an extension of UTA method considering clustering in addition.
+
+The MIP model was implemented using the Pyomo optimization framework with CPLEX as the solver. It's an extension of UTA method considering clustering in addition.
+
+
+
+## 2.2 Results and Visualization
+
+Below are the visualization results showing the learned utility functions for each feature across different clusters:
+
+![*Learned piecewise-linear utility functions for each feature and cluster*](images/utility_functions.png)
+
+# 3. Heuristic Approach
+
+[To be completed]
+
+[^1]: Jacquet-Lagrèze, E., & Siskos, J. (1982). Assessing a set of additive utility functions for multicriteria decision-making, the UTA method. European Journal of Operational Research, 10(2), 151-164.
