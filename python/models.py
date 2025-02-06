@@ -2,6 +2,8 @@ import pickle
 import sys
 from abc import abstractmethod
 
+import matplotlib.pyplot as plt
+
 # import cplex
 import numpy as np
 import pyomo.environ as pyo
@@ -204,30 +206,52 @@ class TwoClustersMIP(BaseModel):
         return model
 
     def compute_breaking_points(self, X):
+        """Compute breaking points for each feature"""
         self.breaking_points = {}
         for i in range(1, self.n + 1):
             x_min = np.min(X[:, i - 1])
             x_max = np.max(X[:, i - 1])
-            self.breaking_points[i] = [
-                x_min + (x_max - x_min) * l / self.L for l in range(self.L + 1)
-            ]
+            self.breaking_points[i] = np.linspace(x_min, x_max, self.L + 1)
 
-    def find_closest_breakpoints(self, i, x_val):
+    def get_segment(self, x_val, i):
+        """Get segment index for a given value and feature"""
         breakpoints = self.breaking_points[i]
-        l = max(0, np.searchsorted(breakpoints, x_val) - 1)
-        lnext = min(self.L, l + 1)
-        return l, lnext
+        idx = np.searchsorted(breakpoints, x_val) - 1
+        return max(0, min(idx, self.L - 1))
 
-    def interpolate(self, model, k, i, x_val):
-        l, l_next = self.find_closest_breakpoints(i, x_val)
+    def get_segment_and_weights(self, x_val, i):
+        """Get segment indices and interpolation weights for a given value and feature
 
-        u_l = pyo.value(model.u[k, i, l])
-        u_l_next = pyo.value(model.u[k, i, l_next])  # if l_next < self.L else u_l
-        print(f"interpolation for {k,i}", u_l, u_l_next)
-        return u_l + (
-            (x_val - self.breaking_points[i][l])
-            / (self.breaking_points[i][l_next] - self.breaking_points[i][l])
-        ) * (u_l_next - u_l)
+        Parameters
+        ----------
+        x_val : float
+            Value to find segments for
+        i : int
+            Feature index
+
+        Returns
+        -------
+        tuple
+            (inferior segment, superior segment, weight of inferior, weight of superior)
+        """
+        breakpoints = self.breaking_points[i]
+        idx = np.searchsorted(breakpoints, x_val)
+
+        # Handle edge cases
+        if idx == 0:
+            return 0, 0, 1.0, 0.0
+        if idx == len(breakpoints):
+            return self.L, self.L, 1.0, 0.0
+
+        # Get surrounding breakpoints
+        x_inf = breakpoints[idx - 1]
+        x_sup = breakpoints[idx]
+
+        # Calculate interpolation weights
+        w_sup = (x_val - x_inf) / (x_sup - x_inf)
+        w_inf = 1 - w_sup
+
+        return idx - 1, idx, w_inf, w_sup
 
     def fit(self, X, Y):
         """Estimation of the parameters - To be completed.
@@ -243,17 +267,20 @@ class TwoClustersMIP(BaseModel):
         self.P = P
         self.n = n
 
+        # Compute breaking points
+        self.compute_breaking_points(X)
+
         model = self.instantiate()
         M = 1000  # Big-M parameter
 
         # Sets
-        model.I = pyo.RangeSet(1, n)  # features
-        model.J = pyo.RangeSet(1, P)  # samples
-        model.K = pyo.RangeSet(1, self.K)  # clusters
-        model.L = pyo.RangeSet(0, self.L)  # breakpoints
+        model.I = pyo.RangeSet(1, n)
+        model.J = pyo.RangeSet(1, P)
+        model.K = pyo.RangeSet(1, self.K)
+        model.L = pyo.RangeSet(0, self.L)
 
         # Variables
-        model.u = pyo.Var(model.K, model.I, model.L, bounds=(0, 1), initialize=0)
+        model.u = pyo.Var(model.K, model.I, model.L, bounds=(0, 1))
         model.c = pyo.Var(model.J, model.K, within=pyo.Binary)
         model.sigma = pyo.Var(model.J, model.K, bounds=(0, None))
 
@@ -262,10 +289,9 @@ class TwoClustersMIP(BaseModel):
             expr=sum(model.sigma[j, k] for j in model.J for k in model.K),
             sense=pyo.minimize,
         )
-        self.compute_breaking_points(X)
 
         # Constraints
-        # Normalization constraints
+        # Normalization
         def init_zero(model, k, i):
             return model.u[k, i, 0] == 0
 
@@ -276,7 +302,7 @@ class TwoClustersMIP(BaseModel):
 
         model.sum_one_constr = pyo.Constraint(model.K, rule=sum_one)
 
-        # Monotonicity constraints
+        # Monotonicity
         def monotonicity(model, k, i, l):
             if l < self.L:
                 return model.u[k, i, l + 1] - model.u[k, i, l] >= self.epsilon
@@ -286,30 +312,64 @@ class TwoClustersMIP(BaseModel):
             model.K, model.I, model.L, rule=monotonicity
         )
 
-        # Preference constraints
-        def preference_inf(model, j, k):
+        # Preference constraints using interpolated utility values
+        def preference_constr(model, j, k):
+            x_util = 0
+            y_util = 0
 
-            diff_util = sum(
-                self.interpolate(model, k, i, X[j - 1, i - 1])
-                - self.interpolate(model, k, i, Y[j - 1, i - 1])
-                for i in model.I
-            )
+            for i in range(n):
+                # Get segments and weights for X
+                x_inf, x_sup, w_x_inf, w_x_sup = self.get_segment_and_weights(
+                    X[j - 1, i], i + 1
+                )
+                x_util += (
+                    w_x_inf * model.u[k, i + 1, x_inf]
+                    + w_x_sup * model.u[k, i + 1, x_sup]
+                )
 
-            return M * (model.c[j, k] - 1) <= diff_util + model.sigma[j, k]
+                # Get segments and weights for Y
+                y_inf, y_sup, w_y_inf, w_y_sup = self.get_segment_and_weights(
+                    Y[j - 1, i], i + 1
+                )
+                y_util += (
+                    w_y_inf * model.u[k, i + 1, y_inf]
+                    + w_y_sup * model.u[k, i + 1, y_sup]
+                )
 
-        # Preference constraints
-        def preference_sup(model, j, k):
+            return x_util - y_util + model.sigma[j, k] >= M * (model.c[j, k] - 1)
 
-            diff_util = sum(
-                self.interpolate(model, k, i, X[j - 1, i - 1])
-                - self.interpolate(model, k, i, Y[j - 1, i - 1])
-                for i in model.I
-            )
+        model.preference_constr = pyo.Constraint(
+            model.J, model.K, rule=preference_constr
+        )
 
-            return diff_util + model.sigma[j, k] <= M * model.c[j, k]
+        def preference_constr2(model, j, k):
+            x_util = 0
+            y_util = 0
 
-        model.preference_sup = pyo.Constraint(model.J, model.K, rule=preference_sup)
-        model.preference_inf = pyo.Constraint(model.J, model.K, rule=preference_inf)
+            for i in range(n):
+                # Get segments and weights for X
+                x_inf, x_sup, w_x_inf, w_x_sup = self.get_segment_and_weights(
+                    X[j - 1, i], i + 1
+                )
+                x_util += (
+                    w_x_inf * model.u[k, i + 1, x_inf]
+                    + w_x_sup * model.u[k, i + 1, x_sup]
+                )
+
+                # Get segments and weights for Y
+                y_inf, y_sup, w_y_inf, w_y_sup = self.get_segment_and_weights(
+                    Y[j - 1, i], i + 1
+                )
+                y_util += (
+                    w_y_inf * model.u[k, i + 1, y_inf]
+                    + w_y_sup * model.u[k, i + 1, y_sup]
+                )
+
+            return x_util - y_util + model.sigma[j, k] <= M * model.c[j, k]
+
+        model.preference_constr2 = pyo.Constraint(
+            model.J, model.K, rule=preference_constr2
+        )
 
         def min_one_cluster(model, j):
             return sum(model.c[j, k] for k in model.K) >= 1
@@ -317,17 +377,14 @@ class TwoClustersMIP(BaseModel):
         model.min_one_cluster_constr = pyo.Constraint(model.J, rule=min_one_cluster)
 
         # Solve
-        solver = SolverFactory(
-            "cplex_direct",
-            # executable="/Applications/CPLEX_Studio2211/cplex/python/3.10/x86-64_osx/cplex",
-        )
+        solver = SolverFactory("cplex_direct")
         solver.solve(model)
 
         self.model = model
         return self
 
     def predict_utility(self, X):
-        """Return Decision Function of the MIP for X. - To be completed.
+        """Return Decision Function of the MIP for X using proper interpolation between breakpoints.
 
         Parameters:
         -----------
@@ -345,11 +402,62 @@ class TwoClustersMIP(BaseModel):
         for j in range(n_samples):
             for k in range(1, self.K + 1):
                 for i in range(1, self.n + 1):
-                    utilities[j, k - 1] += self.interpolate(
-                        self.model, k, i, X[j, i - 1]
+                    l_inf, l_sup, w_inf, w_sup = self.get_segment_and_weights(
+                        X[j, i - 1], i
                     )
+                    u_inf = pyo.value(self.model.u[k, i, l_inf])
+                    u_sup = pyo.value(self.model.u[k, i, l_sup])
+                    utilities[j, k - 1] += w_inf * u_inf + w_sup * u_sup
 
         return utilities
+
+    def plot_utility_functions(self, figsize=(15, 10)):
+        """Plot utility functions for each feature and cluster.
+
+        Parameters
+        ----------
+        figsize : tuple, optional
+            Size of the figure, by default (15, 10)
+        """
+        if self.model is None:
+            raise ValueError("Model must be fitted before plotting utility functions")
+
+        n_rows = (self.n + 1) // 2
+        fig, axes = plt.subplots(n_rows, 2, figsize=figsize)
+        axes = axes.flatten()
+
+        colors = ["b", "r", "g", "purple", "orange"]
+
+        for i in range(1, self.n + 1):
+            ax = axes[i - 1]
+            breakpoints = self.breaking_points[i]
+            x_plot = np.linspace(breakpoints[0], breakpoints[-1], 100)
+
+            for k in range(1, self.K + 1):
+                utils_continuous = []
+                for x in x_plot:
+                    l_inf, l_sup, w_inf, w_sup = self.get_segment_and_weights(x, i)
+                    u_inf = pyo.value(self.model.u[k, i, l_inf])
+                    u_sup = pyo.value(self.model.u[k, i, l_sup])
+                    utils_continuous.append(w_inf * u_inf + w_sup * u_sup)
+
+                ax.plot(
+                    x_plot, utils_continuous, color=colors[k - 1], label=f"Cluster {k}"
+                )
+
+            ax.set_title(f"Feature {i}")
+            ax.set_xlabel("Feature value")
+            ax.set_ylabel("Utility")
+            ax.grid(True)
+            ax.legend()
+            # ax.set_ylim(0, 1)
+
+        # Remove extra subplots if any
+        for i in range(self.n, len(axes)):
+            fig.delaxes(axes[i])
+
+        plt.tight_layout()
+        return fig, axes
 
 
 class HeuristicModel(BaseModel):
