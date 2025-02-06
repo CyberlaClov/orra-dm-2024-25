@@ -236,7 +236,7 @@ class TwoClustersMIP(BaseModel):
             for k in range(1, self.K + 1):
                 self.model.addConstr(
                     M * (self.c[j, k] - 1) <=
-                    quicksum(self.u[k, i, int(X[j-1, i-1] * self.L)] - self.u[k, i, int(Y[j-1, i-1] * self.L)] for i in range(1, self.n + 1))
+                    quicksum(self.interpolate(k, i, X[j-1, i-1]) - self.interpolate(k, i, Y[j-1, i-1]) for i in range(1, self.n + 1))
                     + self.sigma[j, k] <= M * self.c[j, k]
                 )
                     
