@@ -1,7 +1,6 @@
 import pickle
 from abc import abstractmethod
 from gurobipy import Model, GRB, quicksum
-
 import numpy as np
 
 
@@ -168,126 +167,102 @@ class RandomExampleModel(BaseModel):
 
 
 class TwoClustersMIP(BaseModel):
-    """Skeleton of MIP you have to write as the first exercise.
-    You have to encapsulate your code within this class that will be called for evaluation.
-    """
-
     def __init__(self, n_pieces, n_clusters):
-        """Initialization of the MIP Variables
-
-        Parameters
-        ----------
-        n_pieces: int
-            Number of pieces for the utility function of each feature.
-        n_clusters: int
-            Number of clusters to implement in the MIP.
-        """
         super().__init__()
-        self.L = n_pieces
+        self.L = n_pieces 
         self.K = n_clusters
-        #self.seed = 123
-        self.model = self.instantiate()
+        self.model = None
 
-    def instantiate(self):
-        """Instantiation of the MIP Variables - To be completed."""
+    def instantiate(self, P, n):
         model = Model("UTA MIP")
         self.u = {}
         self.c = {}
         self.sigma = {}
         
         for k in range(1, self.K + 1):
-            for i in range(1, self.n + 1):
+            for i in range(1, n + 1):
                 for l in range(self.L + 1):
                     self.u[k, i, l] = model.addVar(lb=0, ub=1, vtype=GRB.CONTINUOUS)
                     
-        for j in range(1, self.P + 1):
+        for j in range(1, P + 1):
             for k in range(1, self.K + 1):
                 self.c[j, k] = model.addVar(vtype=GRB.BINARY)
                 self.sigma[j, k] = model.addVar(lb=0, vtype=GRB.CONTINUOUS)
-                        
-        model.update()   
-        
+                
+        model.update()
         return model
-
-    def fit(self, X, Y):
-        """Estimation of the parameters - To be completed.
-
-        Parameters
-        ----------
-        X: np.ndarray
-            (n_samples, n_features) features of elements preferred to Y elements
-        Y: np.ndarray
-            (n_samples, n_features) features of unchosen elements
-        """
-        P, n = X.shape
-        self.P = P
-        self.n = n
-        
-        for k in range(1, self.K + 1):
-            self.model.addConstr(quicksum(self.u[k, i, self.L] for i in range(1, self.n + 1)) == 1)
-            for i in range(1, self.n + 1):
-                self.model.addConstr(self.u[k, i, 0] == 0)
-                for l in range(self.L):
-                    self.model.addConstr(self.u[k, i, l + 1] >= self.u[k, i, l])
-                    
-        M = 1000
-        for j in range(1, self.P + 1):
-            self.model.addConstr(quicksum(self.c[j, k] for k in range(1, self.K + 1)) >= 1)
-            for k in range(1, self.K + 1):
-                self.model.addConstr(
-                    M * (self.c[j, k] - 1) <=
-                    quicksum(self.interpolate(k, i, X[j-1, i-1]) - self.interpolate(k, i, Y[j-1, i-1]) for i in range(1, self.n + 1))
-                    + self.sigma[j, k] <= M * self.c[j, k]
-                )
-                    
-        self.model.setObjective(quicksum(self.sigma[j, k] for j in range(1, self.P + 1) for k in range(1, self.K + 1)), GRB.MINIMIZE)
-        self.model.optimize()
-        
-        return None
     
-    
-    def find_closest_breakpoints(self, x_val):
-        l = int(np.floor(x_val * self.L))
-        l = max(0, min(l, self.L - 1))
+    def compute_breaking_points(self, X):
+        self.breaking_points = {}
+        for i in range(1, self.n + 1):
+            x_min = np.min(X[:, i-1])
+            x_max = np.max(X[:, i-1])
+            self.breaking_points[i] = [x_min + l * (x_max - x_min) / self.L for l in range(self.L + 1)]
+
+
+    def find_closest_breakpoints(self, i, x_val):
+        breakpoints = self.breaking_points[i]
+        l = max(0, np.searchsorted(breakpoints, x_val) - 1)
         l_next = min(l + 1, self.L)
         return l, l_next
-    
-    
+
+
     def interpolate(self, k, i, x_val):
-        l, l_next = self.find_closest_breakpoints(x_val)
+        l, l_next = self.find_closest_breakpoints(i, x_val)
         
         u_l = self.u[k, i, l].X
         u_l_next = self.u[k, i, l_next].X if l_next < self.L else u_l
         
-        return u_l + (x_val * self.L - l) * (u_l_next - u_l)
-    
+        return u_l + (x_val - self.breaking_points[i][l]) / (self.breaking_points[i][l_next] - self.breaking_points[i][l]) * (u_l_next - u_l)
+
+    def fit(self, X, Y):
+        P, n = X.shape
+        self.P = P
+        self.n = n
+        self.model = self.instantiate(P, n)
+        self.compute_breaking_points(X)
+
+        # Normalization constraints
+        for k in range(1, self.K + 1):
+            self.model.addConstr(quicksum(self.u[k, i, self.L] for i in range(1, n + 1)) == 1)
+
+        # Monotonicity constraints  
+        for k in range(1, self.K + 1):
+            for i in range(1, n + 1):
+                self.model.addConstr(self.u[k, i, 0] == 0)
+                for l in range(self.L):
+                    self.model.addConstr(self.u[k, i, l + 1] >= self.u[k, i, l])
+
+        # Preference constraints
+        M = 1000
+        for j in range(1, P + 1):
+            self.model.addConstr(quicksum(self.c[j, k] for k in range(1, self.K + 1)) >= 1)
+            for k in range(1, self.K + 1):
+                utility_diff = quicksum(
+                    self.interpolate(k, i, X[j-1, i-1]) - self.interpolate(k, i, Y[j-1, i-1])
+                    for i in range(1, n + 1)
+                )
+                self.model.addConstr(M * (self.c[j, k] - 1) <= utility_diff + self.sigma[j, k])
+                self.model.addConstr(utility_diff + self.sigma[j, k] <= M * self.c[j, k])
+        
+        self.model.setObjective(
+            quicksum(self.sigma[j, k] for j in range(1, P + 1) for k in range(1, self.K + 1)),
+            GRB.MINIMIZE
+        )
+        
+        self.model.optimize()
+        return self
 
     def predict_utility(self, X):
-        """Return Decision Function of the MIP for X. - To be completed.
-
-        Parameters:
-        -----------
-        X: np.ndarray
-            (n_samples, n_features) list of features of elements
+        P, n = X.shape
+        utilities = np.zeros((P, self.K))
         
-        Returns
-        -------
-        np.ndarray:
-            (n_samples, n_clusters) array of decision function value for each cluster.
-        """
-        # To be completed
-        # Do not forget that this method is called in predict_preference (line 42) and therefor should return well-organized data for it to work.
-        
-        utilities = np.zeros((self.P, self.K))
-        
-        for j in range(1, self.P + 1):
+        for j in range(1, P + 1):
             for k in range(1, self.K + 1):
-                for i in range(1, self.n + 1):
+                for i in range(1, n + 1):
                     utilities[j-1, k-1] += self.interpolate(k, i, X[j-1, i-1])
         
         return utilities
-        
-    
 
 class HeuristicModel(BaseModel):
     """Skeleton of MIP you have to write as the first exercise.
