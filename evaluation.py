@@ -3,10 +3,10 @@ import sys
 
 sys.path.append("python/")
 
-import metrics
+import python.metrics
 import numpy as np
 from data import Dataloader
-from models import HeuristicModel, TwoClustersMIP
+from python.models import HeuristicModel, TwoClustersMIP
 
 if __name__ == "__main__":  
     print("Starting Python script for evaluation")
