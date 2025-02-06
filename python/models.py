@@ -377,7 +377,7 @@ class TwoClustersMIP(BaseModel):
         model.min_one_cluster_constr = pyo.Constraint(model.J, rule=min_one_cluster)
 
         # Solve
-        solver = SolverFactory("cplex_direct")
+        solver = SolverFactory("gurobi")
         solver.solve(model)
 
         self.model = model
@@ -459,12 +459,16 @@ class TwoClustersMIP(BaseModel):
         plt.tight_layout()
         return fig, axes
 
+
 from typing import Dict, List, Tuple
+
 
 class HeuristicModel:
     """Heuristic model for estimating cluster-based decision functions."""
 
-    def __init__(self, n_pieces: int, n_clusters: int, max_iterations: int = 100) -> None:
+    def __init__(
+        self, n_pieces: int, n_clusters: int, max_iterations: int = 100
+    ) -> None:
         """Initialization of the Heuristic Model.
 
         Parameters:
@@ -480,8 +484,10 @@ class HeuristicModel:
         self.K: int = n_clusters
         self.max_iterations: int = max_iterations  # stopping criterion
         self.cluster_assignments: np.ndarray = None  # cluster assignments
-        self.utilities: Dict[Tuple[int, int, int], float] = {}  # Utility function per cluster
-        self.breaking_points: Dict[int, List[float]] = {} 
+        self.utilities: Dict[Tuple[int, int, int], float] = (
+            {}
+        )  # Utility function per cluster
+        self.breaking_points: Dict[int, List[float]] = {}
 
     def compute_breaking_points(self, X: np.ndarray) -> None:
         """Compute the breaking points for each criterion based on min/max values.
@@ -494,7 +500,9 @@ class HeuristicModel:
         self.breaking_points = {}
         for i in range(X.shape[1]):
             x_min, x_max = np.min(X[:, i]), np.max(X[:, i])
-            self.breaking_points[i] = [x_min + l * (x_max - x_min) / self.L for l in range(self.L + 1)]
+            self.breaking_points[i] = [
+                x_min + l * (x_max - x_min) / self.L for l in range(self.L + 1)
+            ]
 
     def fit(self, X: np.ndarray, Y: np.ndarray) -> "HeuristicModel":
         """Train the heuristic model with iterative clustering.
@@ -541,7 +549,8 @@ class HeuristicModel:
 
                 for k in range(1, self.K + 1):
                     utility_diff = sum(
-                        self.interpolate(k, i, X[j, i]) - self.interpolate(k, i, Y[j, i])
+                        self.interpolate(k, i, X[j, i])
+                        - self.interpolate(k, i, Y[j, i])
                         for i in range(self.n)
                     )
 
@@ -597,7 +606,9 @@ class HeuristicModel:
         l, l_next = self.find_closest_breakpoints(i, x_val)
         u_l = self.utilities[k, i, l]
         u_l_next = self.utilities[k, i, l_next] if l_next < self.L else u_l
-        return u_l + (x_val - self.breaking_points[i][l]) / (self.breaking_points[i][l_next] - self.breaking_points[i][l]) * (u_l_next - u_l)
+        return u_l + (x_val - self.breaking_points[i][l]) / (
+            self.breaking_points[i][l_next] - self.breaking_points[i][l]
+        ) * (u_l_next - u_l)
 
     def predict_utility(self, X: np.ndarray) -> np.ndarray:
         """Predict utility values for new samples.
