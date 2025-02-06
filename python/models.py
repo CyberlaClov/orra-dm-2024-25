@@ -459,58 +459,165 @@ class TwoClustersMIP(BaseModel):
         plt.tight_layout()
         return fig, axes
 
+from typing import Dict, List, Tuple
 
-class HeuristicModel(BaseModel):
-    """Skeleton of MIP you have to write as the first exercise.
-    You have to encapsulate your code within this class that will be called for evaluation.
-    """
+class HeuristicModel:
+    """Heuristic model for estimating cluster-based decision functions."""
 
-    def __init__(self):
-        """Initialization of the Heuristic Model."""
-        self.seed = 123
-        self.models = self.instantiate()
-
-    def instantiate(self):
-        """Instantiation of the MIP Variables"""
-        # To be completed
-        return
-
-    def fit(self, X, Y):
-        """Estimation of the parameters - To be completed.
-
-        Parameters
-        ----------
-        X: np.ndarray
-            (n_samples, n_features) features of elements preferred to Y elements
-        Y: np.ndarray
-            (n_samples, n_features) features of unchosen elements
-        """
-        # To be completed
-        return
-
-    def predict_utility(self, X):
-        """Return Decision Function of the MIP for X. - To be completed.
+    def __init__(self, n_pieces: int, n_clusters: int, max_iterations: int = 100) -> None:
+        """Initialization of the Heuristic Model.
 
         Parameters:
         -----------
-        X: np.ndarray
-            (n_samples, n_features) list of features of elements
-
-        Returns
-        -------
-        np.ndarray:
-            (n_samples, n_clusters) array of decision function value for each cluster.
+        n_pieces : int
+            Number of breakpoints in piecewise linear utility functions.
+        n_clusters : int
+            Number of clusters for classification.
+        max_iterations : int, optional
+            Maximum number of iterations for updating clusters (default is 100).
         """
-        # To be completed
-        # Do not forget that this method is called in predict_preference (line 42) and therefor should return well-organized data for it to work.
-        return
+        self.L: int = n_pieces
+        self.K: int = n_clusters
+        self.max_iterations: int = max_iterations  # stopping criterion
+        self.cluster_assignments: np.ndarray = None  # cluster assignments
+        self.utilities: Dict[Tuple[int, int, int], float] = {}  # Utility function per cluster
+        self.breaking_points: Dict[int, List[float]] = {} 
 
+    def compute_breaking_points(self, X: np.ndarray) -> None:
+        """Compute the breaking points for each criterion based on min/max values.
 
-# if __name__ == "__main__":
+        Parameters:
+        -----------
+        X : np.ndarray
+            The dataset of features (P x n).
+        """
+        self.breaking_points = {}
+        for i in range(X.shape[1]):
+            x_min, x_max = np.min(X[:, i]), np.max(X[:, i])
+            self.breaking_points[i] = [x_min + l * (x_max - x_min) / self.L for l in range(self.L + 1)]
 
-#     dataloader = DataLoader("../data/dataset_4")
-#     X, Y = dataloader.load()
+    def fit(self, X: np.ndarray, Y: np.ndarray) -> "HeuristicModel":
+        """Train the heuristic model with iterative clustering.
 
-#     model = TwoClustersMIP(n_pieces=5, n_clusters=2)
+        Parameters:
+        -----------
+        X : np.ndarray
+            Preference pairs where X[i] is the chosen alternative.
+        Y : np.ndarray
+            Preference pairs where Y[i] is the rejected alternative.
 
-#     model.fit(X, Y)
+        Returns:
+        --------
+        self : HeuristicModel
+            The fitted model.
+        """
+        P, n = X.shape
+        self.P, self.n = P, n
+        self.compute_breaking_points(X)
+
+        # Initialize clustering randomly
+        self.cluster_assignments = np.random.randint(1, self.K + 1, size=P)
+
+        # Initialize utility functions randomly per cluster
+        self.utilities = {
+            (k, i, l): np.random.uniform(0, 1)
+            for k in range(1, self.K + 1)
+            for i in range(self.n)
+            for l in range(self.L + 1)
+        }
+
+        # Normalize utilities so that sum of last breakpoints equals 1
+        for k in range(1, self.K + 1):
+            norm_factor = sum(self.utilities[k, i, self.L] for i in range(self.n))
+            for i in range(self.n):
+                for l in range(self.L + 1):
+                    self.utilities[k, i, l] /= norm_factor
+
+        # Iteratively update cluster assignments
+        for _ in range(self.max_iterations):
+            new_assignments = np.zeros(P, dtype=int)
+            for j in range(P):
+                best_cluster, best_utility_diff = None, -np.inf
+
+                for k in range(1, self.K + 1):
+                    utility_diff = sum(
+                        self.interpolate(k, i, X[j, i]) - self.interpolate(k, i, Y[j, i])
+                        for i in range(self.n)
+                    )
+
+                    if utility_diff > best_utility_diff:
+                        best_utility_diff, best_cluster = utility_diff, k
+
+                new_assignments[j] = best_cluster
+
+            # Check for convergence
+            if np.array_equal(new_assignments, self.cluster_assignments):
+                break
+            self.cluster_assignments = new_assignments
+
+        return self
+
+    def find_closest_breakpoints(self, i: int, x_val: float) -> Tuple[int, int]:
+        """Find the closest breakpoints for interpolation.
+
+        Parameters:
+        -----------
+        i : int
+            Index of the feature.
+        x_val : float
+            Value of the feature.
+
+        Returns:
+        --------
+        Tuple[int, int]
+            Indices of the closest breakpoints.
+        """
+        breakpoints = self.breaking_points[i]
+        l = max(0, np.searchsorted(breakpoints, x_val) - 1)
+        l_next = min(l + 1, self.L)
+        return l, l_next
+
+    def interpolate(self, k: int, i: int, x_val: float) -> float:
+        """Perform interpolation based on precomputed breakpoints.
+
+        Parameters:
+        -----------
+        k : int
+            Cluster index.
+        i : int
+            Feature index.
+        x_val : float
+            Feature value.
+
+        Returns:
+        --------
+        float
+            Interpolated utility value.
+        """
+        l, l_next = self.find_closest_breakpoints(i, x_val)
+        u_l = self.utilities[k, i, l]
+        u_l_next = self.utilities[k, i, l_next] if l_next < self.L else u_l
+        return u_l + (x_val - self.breaking_points[i][l]) / (self.breaking_points[i][l_next] - self.breaking_points[i][l]) * (u_l_next - u_l)
+
+    def predict_utility(self, X: np.ndarray) -> np.ndarray:
+        """Predict utility values for new samples.
+
+        Parameters:
+        -----------
+        X : np.ndarray
+            Input features (n_samples x n_features).
+
+        Returns:
+        --------
+        np.ndarray
+            Utility values for each cluster.
+        """
+        P, n = X.shape
+        utilities = np.zeros((P, self.K))
+
+        for j in range(P):
+            for k in range(1, self.K + 1):
+                for i in range(n):
+                    utilities[j, k - 1] += self.interpolate(k, i, X[j, i])
+
+        return utilities
