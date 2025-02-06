@@ -1,8 +1,18 @@
 import pickle
+import sys
 from abc import abstractmethod
-from gurobipy import Model, GRB, quicksum
 
+# import cplex
 import numpy as np
+import pyomo.environ as pyo
+from gurobipy import GRB, Model, quicksum
+from pyomo.opt import SolverFactory
+
+# from data import DataLoader
+
+# sys.path.append(
+#     "/Users/clovispiedallu/opt/anaconda3/envs/cs_td/lib/python3.10/site-packages"
+# )
 
 
 class BaseModel(object):
@@ -141,8 +151,8 @@ class RandomExampleModel(BaseModel):
         """
         np.random.seed(self.seed)
         num_features = X.shape[1]
-        weights_1 = np.random.rand(num_features) # Weights cluster 1
-        weights_2 = np.random.rand(num_features) # Weights cluster 2
+        weights_1 = np.random.rand(num_features)  # Weights cluster 1
+        weights_2 = np.random.rand(num_features)  # Weights cluster 2
 
         weights_1 = weights_1 / np.sum(weights_1)
         weights_2 = weights_2 / np.sum(weights_2)
@@ -162,9 +172,9 @@ class RandomExampleModel(BaseModel):
         np.ndarray:
             (n_samples, n_clusters) array of decision function value for each cluster.
         """
-        u_1 = np.dot(X, self.weights[0]) # Utility for cluster 1 = X^T.w_1
-        u_2 = np.dot(X, self.weights[1]) # Utility for cluster 2 = X^T.w_2
-        return np.stack([u_1, u_2], axis=1) # Stacking utilities over cluster on axis 1
+        u_1 = np.dot(X, self.weights[0])  # Utility for cluster 1 = X^T.w_1
+        u_2 = np.dot(X, self.weights[1])  # Utility for cluster 2 = X^T.w_2
+        return np.stack([u_1, u_2], axis=1)  # Stacking utilities over cluster on axis 1
 
 
 class TwoClustersMIP(BaseModel):
@@ -185,29 +195,39 @@ class TwoClustersMIP(BaseModel):
         super().__init__()
         self.L = n_pieces
         self.K = n_clusters
-        #self.seed = 123
-        self.model = self.instantiate()
+        self.breaking_points = {}
+        self.model = None
+        self.epsilon = 0.001  # Small value for monotonicity constraint
 
     def instantiate(self):
-        """Instantiation of the MIP Variables - To be completed."""
-        model = Model("UTA MIP")
-        self.u = {}
-        self.c = {}
-        self.sigma = {}
-        
-        for k in range(1, self.K + 1):
-            for i in range(1, self.n + 1):
-                for l in range(self.L + 1):
-                    self.u[k, i, l] = model.addVar(lb=0, ub=1, vtype=GRB.CONTINUOUS)
-                    
-        for j in range(1, self.P + 1):
-            for k in range(1, self.K + 1):
-                self.c[j, k] = model.addVar(vtype=GRB.BINARY)
-                self.sigma[j, k] = model.addVar(lb=0, vtype=GRB.CONTINUOUS)
-                        
-        model.update()   
-        
+        model = pyo.ConcreteModel()
         return model
+
+    def compute_breaking_points(self, X):
+        self.breaking_points = {}
+        for i in range(1, self.n + 1):
+            x_min = np.min(X[:, i - 1])
+            x_max = np.max(X[:, i - 1])
+            self.breaking_points[i] = [
+                x_min + (x_max - x_min) * l / self.L for l in range(self.L + 1)
+            ]
+
+    def find_closest_breakpoints(self, i, x_val):
+        breakpoints = self.breaking_points[i]
+        l = max(0, np.searchsorted(breakpoints, x_val) - 1)
+        lnext = min(self.L, l + 1)
+        return l, lnext
+
+    def interpolate(self, model, k, i, x_val):
+        l, l_next = self.find_closest_breakpoints(i, x_val)
+
+        u_l = pyo.value(model.u[k, i, l])
+        u_l_next = pyo.value(model.u[k, i, l_next])  # if l_next < self.L else u_l
+        print(f"interpolation for {k,i}", u_l, u_l_next)
+        return u_l + (
+            (x_val - self.breaking_points[i][l])
+            / (self.breaking_points[i][l_next] - self.breaking_points[i][l])
+        ) * (u_l_next - u_l)
 
     def fit(self, X, Y):
         """Estimation of the parameters - To be completed.
@@ -222,45 +242,89 @@ class TwoClustersMIP(BaseModel):
         P, n = X.shape
         self.P = P
         self.n = n
-        
-        for k in range(1, self.K + 1):
-            self.model.addConstr(quicksum(self.u[k, i, self.L] for i in range(1, self.n + 1)) == 1)
-            for i in range(1, self.n + 1):
-                self.model.addConstr(self.u[k, i, 0] == 0)
-                for l in range(self.L):
-                    self.model.addConstr(self.u[k, i, l + 1] >= self.u[k, i, l])
-                    
-        M = 1000
-        for j in range(1, self.P + 1):
-            self.model.addConstr(quicksum(self.c[j, k] for k in range(1, self.K + 1)) >= 1)
-            for k in range(1, self.K + 1):
-                self.model.addConstr(
-                    M * (self.c[j, k] - 1) <=
-                    quicksum(self.u[k, i, int(X[j-1, i-1] * self.L)] - self.u[k, i, int(Y[j-1, i-1] * self.L)] for i in range(1, self.n + 1))
-                    + self.sigma[j, k] <= M * self.c[j, k]
-                )
-                    
-        self.model.setObjective(quicksum(self.sigma[j, k] for j in range(1, self.P + 1) for k in range(1, self.K + 1)), GRB.MINIMIZE)
-        self.model.optimize()
-        
-        return None
-    
-    
-    def find_closest_breakpoints(self, x_val):
-        l = int(np.floor(x_val * self.L))
-        l = max(0, min(l, self.L - 1))
-        l_next = min(l + 1, self.L)
-        return l, l_next
-    
-    
-    def interpolate(self, k, i, x_val):
-        l, l_next = self.find_closest_breakpoints(x_val)
-        
-        u_l = self.u[k, i, l].X
-        u_l_next = self.u[k, i, l_next].X if l_next < self.L else u_l
-        
-        return u_l + (x_val * self.L - l) * (u_l_next - u_l)
-    
+
+        model = self.instantiate()
+        M = 1000  # Big-M parameter
+
+        # Sets
+        model.I = pyo.RangeSet(1, n)  # features
+        model.J = pyo.RangeSet(1, P)  # samples
+        model.K = pyo.RangeSet(1, self.K)  # clusters
+        model.L = pyo.RangeSet(0, self.L)  # breakpoints
+
+        # Variables
+        model.u = pyo.Var(model.K, model.I, model.L, bounds=(0, 1), initialize=0)
+        model.c = pyo.Var(model.J, model.K, within=pyo.Binary)
+        model.sigma = pyo.Var(model.J, model.K, bounds=(0, None))
+
+        # Objective
+        model.obj = pyo.Objective(
+            expr=sum(model.sigma[j, k] for j in model.J for k in model.K),
+            sense=pyo.minimize,
+        )
+        self.compute_breaking_points(X)
+
+        # Constraints
+        # Normalization constraints
+        def init_zero(model, k, i):
+            return model.u[k, i, 0] == 0
+
+        model.init_zero_constr = pyo.Constraint(model.K, model.I, rule=init_zero)
+
+        def sum_one(model, k):
+            return sum(model.u[k, i, self.L] for i in model.I) == 1
+
+        model.sum_one_constr = pyo.Constraint(model.K, rule=sum_one)
+
+        # Monotonicity constraints
+        def monotonicity(model, k, i, l):
+            if l < self.L:
+                return model.u[k, i, l + 1] - model.u[k, i, l] >= self.epsilon
+            return pyo.Constraint.Skip
+
+        model.monotonicity_constr = pyo.Constraint(
+            model.K, model.I, model.L, rule=monotonicity
+        )
+
+        # Preference constraints
+        def preference_inf(model, j, k):
+
+            diff_util = sum(
+                self.interpolate(model, k, i, X[j - 1, i - 1])
+                - self.interpolate(model, k, i, Y[j - 1, i - 1])
+                for i in model.I
+            )
+
+            return M * (model.c[j, k] - 1) <= diff_util + model.sigma[j, k]
+
+        # Preference constraints
+        def preference_sup(model, j, k):
+
+            diff_util = sum(
+                self.interpolate(model, k, i, X[j - 1, i - 1])
+                - self.interpolate(model, k, i, Y[j - 1, i - 1])
+                for i in model.I
+            )
+
+            return diff_util + model.sigma[j, k] <= M * model.c[j, k]
+
+        model.preference_sup = pyo.Constraint(model.J, model.K, rule=preference_sup)
+        model.preference_inf = pyo.Constraint(model.J, model.K, rule=preference_inf)
+
+        def min_one_cluster(model, j):
+            return sum(model.c[j, k] for k in model.K) >= 1
+
+        model.min_one_cluster_constr = pyo.Constraint(model.J, rule=min_one_cluster)
+
+        # Solve
+        solver = SolverFactory(
+            "cplex_direct",
+            # executable="/Applications/CPLEX_Studio2211/cplex/python/3.10/x86-64_osx/cplex",
+        )
+        solver.solve(model)
+
+        self.model = model
+        return self
 
     def predict_utility(self, X):
         """Return Decision Function of the MIP for X. - To be completed.
@@ -269,25 +333,24 @@ class TwoClustersMIP(BaseModel):
         -----------
         X: np.ndarray
             (n_samples, n_features) list of features of elements
-        
+
         Returns
         -------
         np.ndarray:
             (n_samples, n_clusters) array of decision function value for each cluster.
         """
-        # To be completed
-        # Do not forget that this method is called in predict_preference (line 42) and therefor should return well-organized data for it to work.
-        
-        utilities = np.zeros((self.P, self.K))
-        
-        for j in range(1, self.P + 1):
+        n_samples = X.shape[0]
+        utilities = np.zeros((n_samples, self.K))
+
+        for j in range(n_samples):
             for k in range(1, self.K + 1):
                 for i in range(1, self.n + 1):
-                    utilities[j-1, k-1] += self.interpolate(k, i, X[j-1, i-1])
-        
+                    utilities[j, k - 1] += self.interpolate(
+                        self.model, k, i, X[j, i - 1]
+                    )
+
         return utilities
-        
-    
+
 
 class HeuristicModel(BaseModel):
     """Skeleton of MIP you have to write as the first exercise.
@@ -295,8 +358,7 @@ class HeuristicModel(BaseModel):
     """
 
     def __init__(self):
-        """Initialization of the Heuristic Model.
-        """
+        """Initialization of the Heuristic Model."""
         self.seed = 123
         self.models = self.instantiate()
 
@@ -325,7 +387,7 @@ class HeuristicModel(BaseModel):
         -----------
         X: np.ndarray
             (n_samples, n_features) list of features of elements
-        
+
         Returns
         -------
         np.ndarray:
@@ -334,3 +396,13 @@ class HeuristicModel(BaseModel):
         # To be completed
         # Do not forget that this method is called in predict_preference (line 42) and therefor should return well-organized data for it to work.
         return
+
+
+# if __name__ == "__main__":
+
+#     dataloader = DataLoader("../data/dataset_4")
+#     X, Y = dataloader.load()
+
+#     model = TwoClustersMIP(n_pieces=5, n_clusters=2)
+
+#     model.fit(X, Y)
