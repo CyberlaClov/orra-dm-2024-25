@@ -461,7 +461,7 @@ class TwoClustersMIP(BaseModel):
 
 
 from typing import Dict, List, Tuple
-
+import matplotlib.pyplot as plt
 
 class HeuristicModel:
     """Heuristic model for estimating cluster-based decision functions."""
@@ -632,3 +632,22 @@ class HeuristicModel:
                     utilities[j, k - 1] += self.interpolate(k, i, X[j, i])
 
         return utilities
+    
+    
+
+    def plot_utilities(self):
+        """Plot the learned utility functions for each cluster."""
+        fig, axes = plt.subplots(self.K, self.n, figsize=(4 * self.n, 3 * self.K))
+        
+        for k in range(1, self.K + 1):
+            for i in range(self.n):
+                ax = axes[k - 1, i] if self.K > 1 else axes[i]
+                breakpoints = self.breaking_points[i]
+                utilities = [self.utilities[k, i, l] for l in range(self.L + 1)]
+                ax.plot(breakpoints, utilities, marker='o', linestyle='-')
+                ax.set_title(f'Cluster {k}, Feature {i + 1}')
+                ax.set_xlabel('Feature Value')
+                ax.set_ylabel('Utility')
+        
+        plt.tight_layout()
+        plt.show()

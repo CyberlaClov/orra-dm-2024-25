@@ -68,19 +68,40 @@ $$
 
 # Heuristic Approach
 
-## Key Features
-1. Random initial cluster assignment
-2. Iterative utility function computation
-3. Cluster refinement based on utility differences
-4. Convergence when assignments stabilize
+## Key Ideas
+
+1. **Randomly assigns initial clusters** to each preference pair.
+2. **Computes utility functions** based on piecewise linear functions.
+3. **Refines clusters iteratively** by minimizing the objective function.
+4. **Stops when cluster assignments stabilize**, indicating convergence.
+
 
 ## Advantages
 - Linear scaling with dataset size
 - Independent of commercial solvers
 - Efficient for large-scale problems
 
+## How to transform data
+
+![Transformation of cars dataset](images/screen1.png){ width=80% }
+
+## Results
+
+![Extracted pairs](images/screen2.png){ width=80% }
+
+## Learned Utility Functions
+
+![Utility Functions Density](images/outputd.png){ width=80% }
+
+## Learned Utility Functions
+
+![Utility Functions](images/outputp.png){ width=60% }
+
 ## Contact Information
 For more details, contact:
+\
 - clovis.piedallu@student-cs.fr
+\
 - basile.heurtault@student-cs.fr
+\
 - jeremy.mathet@student-cs.fr
